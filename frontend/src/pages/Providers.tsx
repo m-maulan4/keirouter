@@ -129,8 +129,14 @@ const GROUPS: { id: CatalogGroup; title: string; icon: LucideIcon }[] = [
   { id: "retrieval", title: "Search, fetch and embeddings", icon: FileSearch },
 ];
 
+// isCustom reports whether a provider is a user-defined custom endpoint,
+// which gets its own section on the page.
+function isCustom(p: Provider): boolean {
+  return p.custom || p.id.startsWith("custom-");
+}
+
 function groupOf(p: Provider): CatalogGroup {
-  if (p.custom || p.id.startsWith("custom-")) return "custom";
+  if (isCustom(p)) return "custom";
   if (p.auth_kind === "none") return "free";
   if (p.auth_kind === "oauth") return "subscription";
   if (p.service_kinds.includes("llm")) return "api";
@@ -203,11 +209,18 @@ export function ProvidersPage() {
   const listed = useMemo(() => (providers.data?.providers ?? []).filter((p) => !p.hidden), [providers.data]);
   const allConnected = useMemo(() => sortByPopularity(listed.filter((p) => accountsByProvider.has(p.id))), [listed, accountsByProvider]);
   const available = useMemo(() => sortByPopularity(listed.filter((p) => !accountsByProvider.has(p.id))), [listed, accountsByProvider]);
+  // Custom providers only surface once they have at least one account.
+  const customProviders = useMemo(
+    () => sortByPopularity(listed.filter((p) => isCustom(p) && accountsByProvider.has(p.id))),
+    [listed, accountsByProvider],
+  );
+  // Connected section shows default providers only; custom has its own section.
+  const defaultConnected = useMemo(() => allConnected.filter((p) => !isCustom(p)), [allConnected]);
   // The picker lists every provider, connected ones included, so another
   // account can be added to a provider that already has one.
   const catalog = useMemo(() => sortByPopularity(listed), [listed]);
   const q = searchQuery.trim().toLowerCase();
-  const connected = allConnected.filter((p) => matches(p, filter, q));
+  const connected = defaultConnected.filter((p) => matches(p, filter, q));
   const filtering = !!q || filter !== "all";
   const noneConnected = !providers.isLoading && !providers.isError && allConnected.length === 0;
 
@@ -247,67 +260,89 @@ export function ProvidersPage() {
           }
         />
       ) : (
-        <section aria-labelledby="connected-heading" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-paper">
-          <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
-            <div className="mr-auto">
-              <SectionTitle id="connected-heading" icon={ICONS.providers} title="Connected" />
+        <div className="flex flex-col gap-6">
+          <section aria-labelledby="custom-heading" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-paper">
+            <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
+              <div className="mr-auto">
+                <SectionTitle id="custom-heading" icon={ICONS.server} title="Custom providers" />
+              </div>
+              <Button variant="secondary" onClick={() => setCustomOpen(true)}>
+                <Plus aria-hidden="true" />
+                Add custom
+              </Button>
             </div>
-            <div className="relative w-full sm:w-64">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-faint" aria-hidden="true" />
-              <input
-                ref={searchRef}
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search"
-                aria-label="Search connected providers"
-                aria-keyshortcuts="/"
-                className="h-9 w-full rounded-lg border border-input bg-surface pl-8 pr-9 text-[13px] text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-              {searchQuery ? (
+            {customProviders.length === 0 ? (
+              <div className="px-6 py-10 text-center">
+                <p className="text-[13px] font-medium text-fg">No custom providers yet</p>
+                <p className="mt-1 text-[12.5px] text-fg-muted">Create a custom provider to connect your own endpoint.</p>
+              </div>
+            ) : (
+              <ConnectedTable providers={customProviders} accountsByProvider={accountsByProvider} healthByProvider={healthByProvider} />
+            )}
+          </section>
+
+          <section aria-labelledby="connected-heading" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-paper">
+            <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
+              <div className="mr-auto">
+                <SectionTitle id="connected-heading" icon={ICONS.providers} title="Connected" />
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-faint" aria-hidden="true" />
+                <input
+                  ref={searchRef}
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search"
+                  aria-label="Search connected providers"
+                  aria-keyshortcuts="/"
+                  className="h-9 w-full rounded-lg border border-input bg-surface pl-8 pr-9 text-[13px] text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Clear search"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <kbd aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-line bg-subtle px-1.5 font-mono text-[11px] text-fg-faint">
+                    /
+                  </kbd>
+                )}
+              </div>
+              <Select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Capability" className="w-full sm:w-44">
+                {kindFilters.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.id === "all" ? "All capabilities" : k.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <p className="sr-only" role="status" aria-live="polite">
+              {filtering ? `${connected.length} of ${defaultConnected.length} connected providers shown` : ""}
+            </p>
+            {connected.length === 0 ? (
+              <div className="px-6 py-10 text-center">
+                <p className="text-[13px] font-medium text-fg">No connected provider matches</p>
                 <button
                   type="button"
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Clear search"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setFilter("all");
+                  }}
+                  className="mt-1 rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  Clear filters
                 </button>
-              ) : (
-                <kbd aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-line bg-subtle px-1.5 font-mono text-[11px] text-fg-faint">
-                  /
-                </kbd>
-              )}
-            </div>
-            <Select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Capability" className="w-full sm:w-44">
-              {kindFilters.map((k) => (
-                <option key={k.id} value={k.id}>
-                  {k.id === "all" ? "All capabilities" : k.label}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <p className="sr-only" role="status" aria-live="polite">
-            {filtering ? `${connected.length} of ${allConnected.length} connected providers shown` : ""}
-          </p>
-          {connected.length === 0 ? (
-            <div className="px-6 py-10 text-center">
-              <p className="text-[13px] font-medium text-fg">No connected provider matches</p>
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery("");
-                  setFilter("all");
-                }}
-                className="mt-1 rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                Clear filters
-              </button>
-            </div>
-          ) : (
-            <ConnectedTable providers={connected} accountsByProvider={accountsByProvider} healthByProvider={healthByProvider} />
-          )}
-        </section>
+              </div>
+            ) : (
+              <ConnectedTable providers={connected} accountsByProvider={accountsByProvider} healthByProvider={healthByProvider} />
+            )}
+          </section>
+        </div>
       )}
 
       {pickerOpen && (

@@ -83,7 +83,12 @@ const (
 	// depleted. A dry balance only recovers when the user tops up or the plan
 	// renews, so probing every half hour just burns requests — one automatic
 	// retry per day plus manual reset via the dashboard covers recovery.
-	CreditsExhaustedCooldown = 24 * time.Hour
+	CreditsExhaustedCooldown = 1 * time.Hour
+	// IgnoreUsageLimitsCooldown is the cooldown applied to a custom-provider
+	// account with IgnoreUsageLimits on after a 429/402. It never escalates via
+	// exponential backoff: the user opted to keep hitting the quota, so a fixed
+	// short window that keeps other requests off the account is enough.
+	IgnoreUsageLimitsCooldown = 10 * time.Second
 )
 
 // maxRecentFailureEntries bounds the failure-dedup map; expired entries are
@@ -728,8 +733,15 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 	// Free providers (auth_kind: "none") have no credentials to protect and
 	// only one auto-seeded account, so cooldowns would lock out the only
 	// routing path. Skip cooldowns for these accounts.
-	if acc, aerr := d.accounts.Get(ctx, accountID); aerr == nil && acc.AuthKind == store.AuthNone {
-		return
+	// The fetch is also reused by the ignore-usage-limits branch below, so a
+	// custom account that opted into keeping traffic after 429/402 only costs
+	// one store read.
+	var acc store.Account
+	if a, aerr := d.accounts.Get(ctx, accountID); aerr == nil {
+		acc = a
+		if acc.AuthKind == store.AuthNone {
+			return
+		}
 	}
 
 	// Classify first so errors that never cool down cannot consume the dedup
@@ -750,6 +762,28 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 			return
 		}
 	default:
+		return
+	}
+
+	// A custom-provider account with ignore_usage_limits ON never parks
+	// permanently on a 429/402: park it for a fixed 10s instead — enough to
+	// keep concurrent same-account requests out — without advancing the
+	// backoff level or flagging credits exhausted. The pipeline's planner
+	// re-queues the account after the cooldown and retries until success or
+	// the client disconnects.
+	if (err.Kind == core.ErrRateLimit || err.Kind == core.ErrQuotaExhausted) &&
+		acc.IgnoreUsageLimits && connectors.IsCustomProviderID(acc.Provider) {
+		cooldown := withJitter(IgnoreUsageLimitsCooldown)
+		if err.RetryAfter > cooldown {
+			cooldown = err.RetryAfter
+		}
+		err.RetryAfter = cooldown
+		_ = d.accounts.SetCooldown(ctx, accountID, time.Now().Add(cooldown))
+		d.markDirty(accountID)
+		if d.routing != nil && err.Model != "" {
+			_ = d.routing.SetModelCooldown(ctx, accountID, err.Model, time.Now().Add(cooldown))
+			d.markDirty(accountID + "\x00" + err.Model)
+		}
 		return
 	}
 

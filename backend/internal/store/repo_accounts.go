@@ -20,7 +20,7 @@ const accountColumns = `id, tenant_id, provider, label, auth_kind,
 	token_wrapped_dek, token_ciphertext,
 	refresh_wrapped_dek, refresh_ciphertext,
 	token_expires_at, metadata, priority, backoff_level, disabled, cooldown_until,
-	proxy_pool_id, needs_reconnect, credits_exhausted, created_at, updated_at`
+	proxy_pool_id, needs_reconnect, credits_exhausted, ignore_usage_limits, created_at, updated_at`
 
 // SetBackoffLevel updates the exponential backoff level for an account.
 func (r *AccountRepo) SetBackoffLevel(ctx context.Context, id string, level int) error {
@@ -41,7 +41,7 @@ func (r *AccountRepo) ResetBackoffLevel(ctx context.Context, id string) error {
 // Create inserts a new account.
 func (r *AccountRepo) Create(ctx context.Context, a Account) error {
 	q := r.db.rebind(`INSERT INTO accounts (` + accountColumns + `)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		a.ID, a.TenantID, a.Provider, a.Label, string(a.AuthKind),
 		nullString(a.SecretWrappedDEK), nullString(a.SecretCiphertext),
@@ -50,6 +50,7 @@ func (r *AccountRepo) Create(ctx context.Context, a Account) error {
 		nullTime(a.TokenExpiresAt), a.Metadata, a.Priority, a.BackoffLevel,
 		boolToInt(a.Disabled), nullTime(a.CooldownUntil), a.ProxyPoolID,
 		boolToInt(a.NeedsReconnect), boolToInt(a.CreditsExhausted),
+		boolToInt(a.IgnoreUsageLimits),
 		formatTime(a.CreatedAt), formatTime(a.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("store: create account: %w", err)
@@ -166,13 +167,21 @@ func (r *AccountRepo) UpdateTokens(ctx context.Context, a Account) error {
 	return err
 }
 
-// Update writes mutable fields (label, priority, disabled, proxy_pool_id).
+// Update writes mutable fields (label, priority, disabled, proxy_pool_id,
+// ignore_usage_limits).
 func (r *AccountRepo) Update(ctx context.Context, a Account) error {
 	q := r.db.rebind(`UPDATE accounts SET label = ?, priority = ?, disabled = ?,
-		proxy_pool_id = ?, updated_at = ? WHERE id = ?`)
+		proxy_pool_id = ?, ignore_usage_limits = ?, updated_at = ? WHERE id = ?`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		a.Label, a.Priority, boolToInt(a.Disabled),
-		a.ProxyPoolID, formatTime(time.Now()), a.ID)
+		a.ProxyPoolID, boolToInt(a.IgnoreUsageLimits), formatTime(time.Now()), a.ID)
+	return err
+}
+
+// SetIgnoreUsageLimits flips the per-account ignore-usage-limits flag.
+func (r *AccountRepo) SetIgnoreUsageLimits(ctx context.Context, id string, flag bool) error {
+	q := r.db.rebind(`UPDATE accounts SET ignore_usage_limits = ?, updated_at = ? WHERE id = ?`)
+	_, err := r.db.sql.ExecContext(ctx, q, boolToInt(flag), formatTime(time.Now()), id)
 	return err
 }
 
@@ -285,6 +294,7 @@ func scanAccountRow(scan func(dest ...any) error) (Account, error) {
 		proxyPoolID      sql.NullString
 		needsReconnect   int
 		creditsExhausted int
+		ignoreUsageLimit int
 		createdRaw       string
 		updatedRaw       string
 	)
@@ -292,7 +302,7 @@ func scanAccountRow(scan func(dest ...any) error) (Account, error) {
 		&a.ID, &a.TenantID, &a.Provider, &a.Label, &authKind,
 		&secretDEK, &secretCT, &tokenDEK, &tokenCT, &refreshDEK, &refreshCT,
 		&tokenExpires, &a.Metadata, &a.Priority, &backoffLevel, &disabled, &cooldown,
-		&proxyPoolID, &needsReconnect, &creditsExhausted, &createdRaw, &updatedRaw,
+		&proxyPoolID, &needsReconnect, &creditsExhausted, &ignoreUsageLimit, &createdRaw, &updatedRaw,
 	)
 	if err != nil {
 		return Account{}, err
@@ -309,6 +319,7 @@ func scanAccountRow(scan func(dest ...any) error) (Account, error) {
 	a.ProxyPoolID = proxyPoolID.String
 	a.NeedsReconnect = needsReconnect != 0
 	a.CreditsExhausted = creditsExhausted != 0
+	a.IgnoreUsageLimits = ignoreUsageLimit != 0
 	a.CreatedAt = parseTime(createdRaw)
 	a.UpdatedAt = parseTime(updatedRaw)
 	if tokenExpires.Valid {

@@ -103,6 +103,10 @@ type Account struct {
 	// balance. The dispatcher parks the account; the flag clears on a
 	// successful request, a provider reconnect, or a manual reset.
 	CreditsExhausted bool
+	// IgnoreUsageLimits keeps a custom-provider account in rotation through
+	// 429/402: rate-limit cooldowns stay at 10s instead of parking the account.
+	// Only meaningful for custom providers; built-ins ignore it.
+	IgnoreUsageLimits bool
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

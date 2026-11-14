@@ -806,6 +806,7 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 			"disabled": a.Disabled, "proxy_pool_id": a.ProxyPoolID,
 			"needs_reconnect":   a.NeedsReconnect,
 			"credits_exhausted": a.CreditsExhausted,
+			"ignore_usage_limits": a.IgnoreUsageLimits,
 			"created_at":        a.CreatedAt,
 		})
 	}
@@ -1251,10 +1252,11 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Label       *string `json:"label"`
-		Priority    *int    `json:"priority"`
-		Disabled    *bool   `json:"disabled"`
-		ProxyPoolID *string `json:"proxy_pool_id"`
+		Label              *string `json:"label"`
+		Priority           *int    `json:"priority"`
+		Disabled           *bool   `json:"disabled"`
+		ProxyPoolID        *string `json:"proxy_pool_id"`
+		IgnoreUsageLimits  *bool   `json:"ignore_usage_limits"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1276,6 +1278,15 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		acc.ProxyPoolID = poolID
 	}
+	if body.IgnoreUsageLimits != nil {
+		// Only custom providers may ignore usage limits; the dispatcher
+		// hard-serves built-in providers regardless of the flag.
+		if !connectors.IsCustomProviderID(acc.Provider) {
+			writeError(w, http.StatusBadRequest, "ignore_usage_limits is only supported for custom providers")
+			return
+		}
+		acc.IgnoreUsageLimits = *body.IgnoreUsageLimits
+	}
 	if err := s.accounts.Update(r.Context(), acc); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
@@ -1283,7 +1294,7 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": acc.ID, "provider": acc.Provider, "label": acc.Label,
 		"priority": acc.Priority, "disabled": acc.Disabled,
-		"proxy_pool_id": acc.ProxyPoolID,
+		"proxy_pool_id": acc.ProxyPoolID, "ignore_usage_limits": acc.IgnoreUsageLimits,
 	})
 }
 

@@ -71,6 +71,176 @@ func newPlannerDispatcherWithConnector(t *testing.T, conn core.Connector, accoun
 	return d
 }
 
+// newPlannerDispatcherWithCustoms creates custom-provider accounts for the
+// ignore-usage-limits loop. ignore maps account id -> IgnoreUsageLimits.
+func newPlannerDispatcherWithCustoms(t *testing.T, conn core.Connector, ids []string, ignore map[string]bool) (*dispatch.Dispatcher, *store.DB) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: ":memory:"}, t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, db.Migrate(ctx))
+	require.NoError(t, db.Tenants().EnsureDefault(ctx))
+	t.Cleanup(func() { _ = db.Close() })
+
+	key, err := crypto.GenerateMasterKey()
+	require.NoError(t, err)
+	sealer, err := crypto.NewSealer(key)
+	require.NoError(t, err)
+	secrets := vault.New(sealer)
+
+	for i, id := range ids {
+		now := time.Now()
+		account := store.Account{
+			ID: id, TenantID: store.DefaultTenantID, Provider: "custom-openai",
+			Label: id, AuthKind: store.AuthAPIKey, Priority: (i + 1) * 10,
+			Metadata: "{}", CreatedAt: now, UpdatedAt: now,
+			IgnoreUsageLimits: ignore[id],
+		}
+		require.NoError(t, secrets.Seal(&account, vault.NewSecret{APIKey: "sk-test"}))
+		require.NoError(t, db.Accounts().Create(ctx, account))
+	}
+
+	d := dispatch.New(plannerConnectorSource{conn: conn}, db.Accounts(), secrets)
+	d.SetRoutingSource(db.Routing())
+	return d, db
+}
+
+func mustAttempt(t *testing.T, planner *attemptPlanner) dispatch.Attempt {
+	t.Helper()
+	a, ok := planner.Current()
+	require.True(t, ok)
+	return a
+}
+
+// TestAttemptPlannerIgnoreUsageLimitsSingleOnRetries verifies PRD Opsi A: one
+// ON account parks 10s, sleeps, then is retried.
+func TestAttemptPlannerIgnoreUsageLimitsSingleOnRetries(t *testing.T) {
+	ctx := context.Background()
+	d, db := newPlannerDispatcherWithCustoms(t, plannerConnector{}, []string{"a1"}, map[string]bool{"a1": true})
+	targets := []dispatch.Target{{Provider: "custom-openai", Model: "glm-5.2"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+	// Real dispatcher parks a1 on the DB before the planner re-plans.
+	pe := &core.ProviderError{Kind: core.ErrRateLimit, Scope: core.FailureScopeAccount}
+	d.NoteFailure(ctx, "a1", pe)
+
+	var slept []time.Duration
+	planner.sleep = func(_ context.Context, d time.Duration) bool {
+		slept = append(slept, d)
+		// Simulate the 10s passing: expire a1's cooldown so the re-plan finds it.
+		require.NoError(t, db.Accounts().SetCooldown(ctx, "a1", time.Now()))
+		return true
+	}
+	first := mustAttempt(t, planner)
+	retry, ok := planner.AfterFailure(ctx, first, pe)
+	require.True(t, ok, "the ON account is retried after the cooldown")
+	require.Equal(t, first.Account.ID, retry.Account.ID)
+	require.Equal(t, []time.Duration{dispatch.IgnoreUsageLimitsCooldown}, slept,
+		"a lone cooling ON account sleeps the fixed cooldown before retrying")
+	require.True(t, planner.remaining, "the loop is still live")
+}
+
+// TestAttemptPlannerIgnoreUsageLimitsTwoOnSkipsSleepWhenFresh verifies PRD
+// Opsi B: with a second ON account fresh, the failed account is skipped and
+// the fresh one is tried without sleeping.
+func TestAttemptPlannerIgnoreUsageLimitsTwoOnSkipsSleepWhenFresh(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newPlannerDispatcherWithCustoms(t, plannerConnector{}, []string{"a1", "a2"}, map[string]bool{"a1": true, "a2": true})
+	targets := []dispatch.Target{{Provider: "custom-openai", Model: "glm-5.2"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+	slept := false
+	planner.sleep = func(context.Context, time.Duration) bool { slept = true; t.Fatal("must not sleep"); return false }
+	pe := &core.ProviderError{Kind: core.ErrRateLimit, Scope: core.FailureScopeAccount}
+	d.NoteFailure(ctx, "a1", pe) // park a1
+
+	first := mustAttempt(t, planner)
+	require.Equal(t, "a1", first.Account.ID)
+	second, ok := planner.AfterFailure(ctx, first, pe)
+	require.True(t, ok)
+	require.Equal(t, "a2", second.Account.ID, "option B: a2 is fresh and taken directly")
+	require.False(t, slept)
+}
+
+// TestAttemptPlannerIgnoreUsageLimitsMixOnOff follows PRD "Campuran ON/OFF":
+// a1 (ON) fails 429 -> ignored loop offers the next fresh account a2 (OFF)
+// directly; a2 fails 429 -> parked NORMALLY and excluded; a1 comes back after
+// its short cooldown. a2 is never offered again.
+func TestAttemptPlannerIgnoreUsageLimitsMixOnOff(t *testing.T) {
+	ctx := context.Background()
+	d, db := newPlannerDispatcherWithCustoms(t, plannerConnector{}, []string{"a1", "a2"}, map[string]bool{"a1": true})
+	targets := []dispatch.Target{{Provider: "custom-openai", Model: "glm-5.2"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+
+	pe := &core.ProviderError{Kind: core.ErrRateLimit, Scope: core.FailureScopeAccount}
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+	// Whenever the ignore loop must wait, expire a1's cooldown so it comes
+	// back instead of blocking the test on a real 10s sleep.
+	planner.sleep = func(_ context.Context, _ time.Duration) bool {
+		require.NoError(t, db.Accounts().SetCooldown(ctx, "a1", time.Now()))
+		return true
+	}
+
+	// a1 (ON) fails 429 -> ignore loop probes: no fresh ON account yet, but
+	// a2 (OFF, fresh) is offered directly (option B), no sleep.
+	a1 := mustAttempt(t, planner)
+	require.Equal(t, "a1", a1.Account.ID)
+	d.NoteFailure(ctx, "a1", pe)
+	second, ok := planner.AfterFailure(ctx, a1, pe)
+	require.True(t, ok)
+	require.Equal(t, "a2", second.Account.ID, "option B: the next fresh account is offered without a sleep")
+
+	// a2 (OFF) fails 429 -> parked NORMALLY (escalating backoff, exclusion).
+	// The request waits for a1's cooldown and comes back to a1.
+	d.NoteFailure(ctx, "a2", pe)
+	third, ok := planner.AfterFailure(ctx, second, pe)
+	require.True(t, ok)
+	require.Equal(t, "a1", third.Account.ID, "a1 is retried; a2 is not in the ignore loop")
+
+	// Repeat: a1 fails again and keeps the loop alive; a2 stays parked/excluded.
+	d.NoteFailure(ctx, "a1", pe)
+	fourth, ok := planner.AfterFailure(ctx, third, pe)
+	require.True(t, ok)
+	require.Equal(t, "a1", fourth.Account.ID, "only ON accounts rotate in the ignore loop")
+
+	// Fail both accounts exhaustively; a2 is excluded and the loop still only
+	// re-offers a1.
+	d.NoteFailure(ctx, "a2", pe)
+	fifth, ok := planner.AfterFailure(ctx, fourth, pe)
+	require.True(t, ok)
+	require.Equal(t, "a1", fifth.Account.ID)
+}
+
+// TestAttemptPlannerIgnoreUsageLimitsContextCancelStops verifies ctx cancel
+// ends the endless loop (PRD: sleepCtx/ctx.Done() is the only exit).
+func TestAttemptPlannerIgnoreUsageLimitsContextCancelStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d, _ := newPlannerDispatcherWithCustoms(t, plannerConnector{}, []string{"a1"}, map[string]bool{"a1": true})
+	targets := []dispatch.Target{{Provider: "custom-openai", Model: "glm-5.2"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+	pe := &core.ProviderError{Kind: core.ErrRateLimit, Scope: core.FailureScopeAccount}
+	d.NoteFailure(ctx, "a1", pe)
+
+	slept := 0
+	planner.sleep = func(_ context.Context, _ time.Duration) bool {
+		slept++
+		cancel() // the client goes away mid-sleep
+		return false
+	}
+	first := mustAttempt(t, planner)
+	_, ok := planner.AfterFailure(ctx, first, pe)
+	require.False(t, ok, "cancelled context stops the ignore loop")
+	require.Equal(t, 1, slept)
+}
+
 func TestAttemptPlannerModelFailureKeepsAccountAvailableForNextModel(t *testing.T) {
 	ctx := context.Background()
 	d := newPlannerDispatcher(t)

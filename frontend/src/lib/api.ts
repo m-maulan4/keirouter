@@ -296,8 +296,17 @@ export interface Account {
   disabled: boolean;
   proxy_pool_id?: string;
   needs_reconnect?: boolean;
+  ignore_usage_limits?: boolean;
   created_at: string;
 }
+
+export type AccountPatch = {
+  label?: string;
+  priority?: number;
+  disabled?: boolean;
+  proxy_pool_id?: string;
+  ignore_usage_limits?: boolean;
+};
 
 export interface AccountInput {
   provider: string;
@@ -1882,7 +1891,7 @@ export const api = {
     request<{ id: string }>("POST", "/accounts", input),
   bulkCreateAccounts: (input: BulkAccountInput) =>
     request<BulkAccountResponse>("POST", "/accounts/bulk", input),
-  updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string }) =>
+  updateAccount: (id: string, patch: AccountPatch) =>
     request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
   testAccount: (id: string) =>

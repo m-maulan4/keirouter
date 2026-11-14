@@ -193,12 +193,24 @@ func TestAccountRepo_CRUDAndCooldown(t *testing.T) {
 	require.Equal(t, "openai", got.Provider)
 	require.Equal(t, "ct", got.SecretCiphertext)
 	require.Nil(t, got.CooldownUntil)
+	require.False(t, got.IgnoreUsageLimits, "default is off")
 
 	until := time.Now().Add(5 * time.Minute)
 	require.NoError(t, db.Accounts().SetCooldown(ctx, "acc1", until))
 	got, err = db.Accounts().Get(ctx, "acc1")
 	require.NoError(t, err)
 	require.NotNil(t, got.CooldownUntil)
+
+	require.NoError(t, db.Accounts().SetIgnoreUsageLimits(ctx, "acc1", true))
+	got, err = db.Accounts().Get(ctx, "acc1")
+	require.NoError(t, err)
+	require.True(t, got.IgnoreUsageLimits, "flag round-trips through SetIgnoreUsageLimits")
+
+	got.IgnoreUsageLimits = true
+	require.NoError(t, db.Accounts().Update(ctx, got))
+	got, err = db.Accounts().Get(ctx, "acc1")
+	require.NoError(t, err)
+	require.True(t, got.IgnoreUsageLimits, "flag round-trips through Update and survives a re-read")
 
 	list, err := db.Accounts().ListByProvider(ctx, DefaultTenantID, "openai")
 	require.NoError(t, err)

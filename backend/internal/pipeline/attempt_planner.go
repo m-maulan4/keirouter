@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 )
@@ -35,6 +36,10 @@ type attemptPlanner struct {
 	affinity   dispatch.PlanOptions
 	excluded   map[string]struct{}
 	attempted  map[dispatch.AttemptKey]struct{}
+	// ignored tracks accounts that opted into ignore_usage_limits and failed
+	// with a rate/quota error during this request. They are the only accounts
+	// eligible for the endless retry loop; OFF accounts stay excluded.
+	ignored map[string]struct{}
 	current    dispatch.Attempt
 	remaining  bool
 	// sameRetries counts last-resort retries of the current attempt.
@@ -88,6 +93,7 @@ func newAttemptPlanner(
 		affinity:   options,
 		excluded:   excluded,
 		attempted:  attempted,
+		ignored:    make(map[string]struct{}),
 		sleep:      sleepCtx,
 	}
 	if len(initial) > 0 {
@@ -109,7 +115,27 @@ func (p *attemptPlanner) AfterFailure(ctx context.Context, failed dispatch.Attem
 	p.attempted[failed.Key()] = struct{}{}
 	p.options.ExcludedAttempts = p.attempted
 	if pe != nil && pe.EffectiveScope() == core.FailureScopeAccount {
-		p.excluded[failed.Account.ID] = struct{}{}
+		if pe.Kind == core.ErrRateLimit || pe.Kind == core.ErrQuotaExhausted {
+			if failed.Account.IgnoreUsageLimits && connectors.IsCustomProviderID(failed.Account.Provider) {
+				// This account opted in: the ignore loop below keeps offering
+				// it while OFF accounts stay excluded.
+				delete(p.excluded, failed.Account.ID)
+				p.ignored[failed.Account.ID] = struct{}{}
+			} else {
+				p.excluded[failed.Account.ID] = struct{}{}
+			}
+			if len(p.ignored) > 0 {
+				if next, ok := p.ignoreRetry(ctx); ok {
+					return next, true
+				}
+				// Context cancelled or every ON account is gone/disabled:
+				// surface the last failure and let the caller stop.
+				p.remaining = false
+				return dispatch.Attempt{}, false
+			}
+		} else {
+			p.excluded[failed.Account.ID] = struct{}{}
+		}
 	}
 	p.options.ExcludedAccountIDs = p.excluded
 	p.dispatcher.EvictAccountAffinity(ctx, p.tenantID, failed.Target, p.affinity, failed.Account.ID)
@@ -125,6 +151,44 @@ func (p *attemptPlanner) AfterFailure(ctx context.Context, failed dispatch.Attem
 	p.sameRetries = 0
 	p.current = attempts[0]
 	return p.current, true
+}
+
+// ignoreRetry implements the endless retry loop for ignore_usage_limits
+// accounts (custom providers only, 429/402 only). Ignored accounts are never
+// permanently excluded; OFF accounts keep their exclusion. When another ON
+// account is already fresh it is used immediately (option B); when nothing is
+// eligible the request sleeps IgnoreUsageLimitsCooldown before re-planning
+// (option A). There is no attempt cap: the loop ends only when sleepCtx/ctx is
+// done (client disconnect / request deadline) or the plan stays empty with
+// every ignored account disabled or gone.
+func (p *attemptPlanner) ignoreRetry(ctx context.Context) (dispatch.Attempt, bool) {
+	for id := range p.ignored {
+		delete(p.excluded, id)
+		// PlanWith filters on the attempted set too, so forget the failed
+		// keys of re-eligible accounts or they can never be re-offered.
+		for key := range p.attempted {
+			if key.AccountID == id {
+				delete(p.attempted, key)
+			}
+		}
+	}
+	p.options.ExcludedAccountIDs = p.excluded
+	p.options.ExcludedAttempts = p.attempted
+
+	for {
+		attempts, err := p.dispatcher.PlanWith(ctx, p.tenantID, p.targets, p.required, p.options)
+		if err == nil && len(attempts) > 0 {
+			p.sameRetries = 0
+			p.current = attempts[0]
+			return p.current, true
+		}
+		// Nothing fresh: every ON account is still cooling down (a cooldown
+		// may outlive the nominal 10s by the jitter margin), disabled, or
+		// gone. Wait, then re-plan.
+		if !p.sleep(ctx, dispatch.IgnoreUsageLimitsCooldown) {
+			return dispatch.Attempt{}, false
+		}
+	}
 }
 
 // retrySame decides whether the exhausted chain should re-run the failed

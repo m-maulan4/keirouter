@@ -426,7 +426,7 @@ function AccountsPanel({
   }, [provider.id, setPage]);
 
   const update = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string } }) => api.updateAccount(id, patch),
+    mutationFn: ({ id, patch }: { id: string; patch: AccountPatch }) => api.updateAccount(id, patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
     onError: (e: Error) => toast.error("Couldn't update the account", e.message),
   });
@@ -540,6 +540,7 @@ function AccountsPanel({
       }),
     onMove: (dir) => move(a.id, dir),
     onPatch: (patch) => update.mutate({ id: a.id, patch }),
+    isCustom: !!provider.custom,
     onTest: () => runTest(a.id),
     onRemove: () => removeOne(a),
   });
@@ -698,7 +699,7 @@ function AccountsPanel({
   );
 }
 
-type AccountPatch = { label?: string; priority?: number; proxy_pool_id?: string; disabled?: boolean };
+type AccountPatch = { label?: string; priority?: number; proxy_pool_id?: string; disabled?: boolean; ignore_usage_limits?: boolean };
 
 interface AccountRowProps {
   account: Account;
@@ -711,6 +712,7 @@ interface AccountRowProps {
   onToggleSelect: () => void;
   onMove: (dir: -1 | 1) => void;
   onPatch: (patch: AccountPatch) => void;
+  isCustom: boolean;
   onTest: () => void;
   onRemove: () => void;
 }
@@ -948,7 +950,7 @@ function AccountTestError({ test }: { test?: TestResult }) {
   );
 }
 
-function AccountDetails({ a, row, pools, onPatch }: { a: Account; row: AccountRowState; pools: ProxyPool[]; onPatch: (patch: AccountPatch) => void }) {
+function AccountDetails({ a, row, pools, onPatch, isCustom }: { a: Account; row: AccountRowState; pools: ProxyPool[]; onPatch: (patch: AccountPatch) => void; isCustom: boolean }) {
   const { pool, quota } = row;
   return (
     <div className="space-y-2.5">
@@ -991,11 +993,26 @@ function AccountDetails({ a, row, pools, onPatch }: { a: Account; row: AccountRo
         />
       )}
       {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
+      {isCustom && (
+        <div className="flex items-center justify-between gap-4 pt-1">
+          <div className="min-w-0">
+            <label className="block text-[13px] font-medium text-fg">Ignore usage limits</label>
+            <p className="mt-0.5 text-[12px] leading-5 text-fg-muted">
+              Keep this account in rotation even when it hits quota limits. Requests retry every 10s until they succeed.
+            </p>
+          </div>
+          <Toggle
+            checked={!!a.ignore_usage_limits}
+            onChange={(on) => onPatch({ ignore_usage_limits: on })}
+            label={`Ignore usage limits for ${row.name}`}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function AccountRow({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, onTest, onRemove }: AccountRowProps) {
+function AccountRow({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, isCustom, onTest, onRemove }: AccountRowProps) {
   const row = useAccountRow(a, pools, test, onPatch);
   const rowTone = selected ? "bg-brand-soft" : a.disabled ? "bg-subtle/60" : "";
   const cell = "px-3 py-2.5 align-middle";
@@ -1039,7 +1056,7 @@ function AccountRow({ account: a, index, total, pools, selected, test, batchTest
       <tr id={row.detailsId} hidden={!row.detailsOpen}>
         <td />
         <td colSpan={5} className="px-3 pb-3 pt-0">
-          {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} />}
+          {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} isCustom={isCustom} />}
         </td>
       </tr>
     </tbody>
@@ -1048,7 +1065,7 @@ function AccountRow({ account: a, index, total, pools, selected, test, batchTest
 
 // AccountCard is the phone layout of AccountRow: identity and status first,
 // then priority, then the switch and row actions within thumb reach.
-function AccountCard({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, onTest, onRemove }: AccountRowProps) {
+function AccountCard({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, isCustom, onTest, onRemove }: AccountRowProps) {
   const row = useAccountRow(a, pools, test, onPatch);
   return (
     <li className={cn("px-4 py-3", selected ? "bg-brand-soft" : a.disabled && "bg-subtle/60")}>
@@ -1086,7 +1103,7 @@ function AccountCard({ account: a, index, total, pools, selected, test, batchTes
         </div>
       )}
       <div id={row.detailsId} hidden={!row.detailsOpen} className="mt-3">
-        {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} />}
+        {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} isCustom={isCustom} />}
       </div>
     </li>
   );

@@ -519,6 +519,64 @@ func testAccountWithProvider(id, provider string, priority int) store.Account {
 	}
 }
 
+func TestNoteFailureIgnoreUsageLimitsCustomOnShortCooldown(t *testing.T) {
+	ctx := context.Background()
+	acc := testAccountWithProvider("acc-custom-on", "custom-openai", 10)
+	acc.IgnoreUsageLimits = true
+	d, db := newDispatchTest(t, acc)
+
+	d.NoteFailure(ctx, "acc-custom-on", &core.ProviderError{Kind: core.ErrRateLimit})
+
+	account, err := db.Accounts().Get(ctx, "acc-custom-on")
+	require.NoError(t, err)
+	require.NotNil(t, account.CooldownUntil)
+	require.WithinDuration(t, time.Now().Add(IgnoreUsageLimitsCooldown), *account.CooldownUntil, 3*time.Second,
+		"an ignore-usage-limits account parks for the short fixed cooldown")
+	require.Zero(t, account.BackoffLevel, "no exponential backoff escalation")
+	require.False(t, account.CreditsExhausted, "no credits-exhausted flag")
+}
+
+func TestNoteFailureIgnoreUsageLimitsQuotaExhaustedNotFlagged(t *testing.T) {
+	ctx := context.Background()
+	acc := testAccountWithProvider("acc-custom-quota", "custom-openai", 10)
+	acc.IgnoreUsageLimits = true
+	d, db := newDispatchTest(t, acc)
+
+	d.NoteFailure(ctx, "acc-custom-quota", &core.ProviderError{Kind: core.ErrQuotaExhausted, CreditsExhausted: true})
+
+	account, err := db.Accounts().Get(ctx, "acc-custom-quota")
+	require.NoError(t, err)
+	require.False(t, account.CreditsExhausted, "ignore mode must not park/flag a dry balance")
+	require.NotNil(t, account.CooldownUntil)
+	require.WithinDuration(t, time.Now().Add(IgnoreUsageLimitsCooldown), *account.CooldownUntil, 3*time.Second)
+}
+
+func TestNoteFailureIgnoreUsageLimitsCustomOffNormalPark(t *testing.T) {
+	ctx := context.Background()
+	d, db := newDispatchTest(t, testAccountWithProvider("acc-custom-off", "custom-openai", 10))
+
+	d.NoteFailure(ctx, "acc-custom-off", &core.ProviderError{Kind: core.ErrRateLimit})
+
+	account, err := db.Accounts().Get(ctx, "acc-custom-off")
+	require.NoError(t, err)
+	require.Equal(t, 1, account.BackoffLevel, "OFF accounts still escalate backoff")
+	require.False(t, account.CreditsExhausted)
+}
+
+func TestNoteFailureIgnoreUsageLimitsBuiltInIgnored(t *testing.T) {
+	ctx := context.Background()
+	acc := testAccount("acc-builtin", 10)
+	acc.IgnoreUsageLimits = true // malicious/buggy flag on a built-in account
+	d, db := newDispatchTest(t, acc)
+
+	d.NoteFailure(ctx, "acc-builtin", &core.ProviderError{Kind: core.ErrRateLimit})
+
+	account, err := db.Accounts().Get(ctx, "acc-builtin")
+	require.NoError(t, err)
+	require.Equal(t, 1, account.BackoffLevel, "built-in providers always escalate normally")
+	require.NotNil(t, account.CooldownUntil)
+}
+
 func TestAdvanceRotationStateHonorsStickyLimit(t *testing.T) {
 	cursor, nextCursor, hits := advanceRotationState(3, 0, 0, 2)
 	require.Equal(t, 0, cursor)
