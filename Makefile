@@ -29,7 +29,9 @@ C_CYAN   := \033[36m
 dev:
 	@printf "$(C_BOLD)$(C_CYAN)Starting KeiRouter$(C_RESET) backend (:20180) + dashboard (:5180)…\n"
 	@trap 'trap - INT TERM EXIT; kill 0' INT TERM EXIT; \
-	( cd $(BACKEND_DIR) && go run ./cmd/keirouter ) & \
+	( cd $(BACKEND_DIR) && \
+		if [ -f .env.dev ]; then set -a; . ./.env.dev; set +a; fi; \
+		go run ./cmd/keirouter ) & \
 	( \
 		printf "$(C_DIM)⏳ Waiting for backend…$(C_RESET)\n"; \
 		ready=0; \
@@ -51,7 +53,9 @@ dev:
 
 ## backend: run only the Go backend.
 backend:
-	cd $(BACKEND_DIR) && go run ./cmd/keirouter
+	cd $(BACKEND_DIR) && \
+	if [ -f .env.dev ]; then set -a; . ./.env.dev; set +a; fi; \
+	go run ./cmd/keirouter
 
 ## frontend: run only the Vite dev server.
 frontend:
