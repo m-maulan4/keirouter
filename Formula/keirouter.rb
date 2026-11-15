@@ -1,27 +1,27 @@
-# Auto-updated by release.yml on tag v0.4.0-1. Do not edit manually.
+# Auto-updated by release.yml on tag v0.4.0-2. Do not edit manually.
 class Keirouter < Formula
   desc "Self-hosted AI gateway — one endpoint for 130+ LLM providers with fallback, caching, and a dashboard"
   homepage "https://github.com/mydisha/keirouter"
-  version "0.4.0-1"
+  version "0.4.0-2"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-1/keirouter_v0.4.0-1_darwin_arm64.tar.gz"
-      sha256 "3a5f9f38207d110a4b1adce563e815379e105a6e34c7811c52f80ed916013e07"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-2/keirouter_v0.4.0-2_darwin_arm64.tar.gz"
+      sha256 "0367f07fc3cb2fe2c089d09b9fdaa4c71babfba195d84e6bd8103c9605ae9020"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-1/keirouter_v0.4.0-1_darwin_amd64.tar.gz"
-      sha256 "7bf03e808284ca7da9307d2df2b1635f5abbd017b8c59924ef706baf9af1a6a5"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-2/keirouter_v0.4.0-2_darwin_amd64.tar.gz"
+      sha256 "5c6788ee25580932b576dabbda5b4a35c7e2d75b361abf6250abecb7b000cbaa"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-1/keirouter_v0.4.0-1_linux_arm64.tar.gz"
-      sha256 "5c5d850c2ed8ff99cfafef5b812f6286d2af0326562877254ac1e597cbc174a7"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-2/keirouter_v0.4.0-2_linux_arm64.tar.gz"
+      sha256 "e29375c66e804d8b38ee7812fc27b01ea130988190812a28b014d8dc29f4aca5"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-1/keirouter_v0.4.0-1_linux_amd64.tar.gz"
-      sha256 "2635be20b08c52e75a7c17193be66a7296c10344e9c57939cb65e57ecd505efa"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.4.0-2/keirouter_v0.4.0-2_linux_amd64.tar.gz"
+      sha256 "4288842193a22f3974843c16d3cf27828d01eac03c63ed4104b0d1facc663cf6"
     end
   end
 
