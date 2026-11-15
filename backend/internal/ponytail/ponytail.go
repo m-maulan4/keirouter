@@ -31,7 +31,7 @@ const (
 	LevelLite Level = "lite"
 	// LevelFull (default) enforces the laziness ladder.
 	LevelFull Level = "full"
-	// LevelUltra is the YAGNI-extremist intensity.
+	// LevelUltra also questions the request before building.
 	LevelUltra Level = "ultra"
 )
 

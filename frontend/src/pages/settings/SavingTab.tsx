@@ -53,9 +53,9 @@ const ponytailOptions = [
   { value: "ultra", label: "Ultra" },
 ];
 const ponytailHints: Record<string, string> = {
-  lite: "Light nudge toward minimal code.",
-  full: "Balanced lazy-senior-dev bias.",
-  ultra: "Maximum bias toward the smallest change.",
+  lite: "Build what's asked. Name the smaller option in one line.",
+  full: "The rules above. Minimal code, reuse existing code first.",
+  ultra: "Also question the request. Push back on what the need doesn't justify.",
 };
 
 const rtkFilterOptions = [
